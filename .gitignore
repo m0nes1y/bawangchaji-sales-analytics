@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 生成的数据库与数据（均可由 backend/generate_data.py 重新生成，固定种子可复现）
+*.db
+*.sqlite
+*.sqlite3
+data/bawangchaji_sales.csv
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+.workbuddy/

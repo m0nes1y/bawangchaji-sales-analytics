@@ -1,0 +1,279 @@
+/* ── Reset & Base ─────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg: #f5f7fa;
+    --card-bg: #ffffff;
+    --primary: #6b21a8;
+    --primary-light: #9333ea;
+    --accent: #f97316;
+    --text: #1e293b;
+    --text-secondary: #64748b;
+    --border: #e2e8f0;
+    --shadow: 0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
+    --shadow-lg: 0 4px 12px rgba(0,0,0,.1);
+    --radius: 10px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+}
+
+/* ── Header ───────────────────────────────────── */
+.header {
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    color: #fff;
+    padding: 20px 0;
+    box-shadow: var(--shadow-lg);
+}
+.header-inner {
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 0 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+.header h1 { font-size: 22px; font-weight: 700; }
+.header-badge {
+    background: rgba(255,255,255,.2);
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+}
+
+/* ── Container ────────────────────────────────── */
+.container {
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+/* ── KPI Row ──────────────────────────────────── */
+.kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.kpi-card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    box-shadow: var(--shadow);
+    text-align: center;
+    border-top: 3px solid var(--primary);
+}
+.kpi-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--primary);
+}
+.kpi-label {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+/* ── Chart Grid ───────────────────────────────── */
+.chart-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+}
+.chart-card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow);
+}
+.chart-card.span-full { grid-column: 1 / -1; }
+.chart-card h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+/* 产品排名 销量/营收 切换 */
+.metric-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 500;
+}
+.metric-toggle button {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 4px 14px;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+.metric-toggle button + button { border-left: 1px solid var(--border); }
+.metric-toggle button.active {
+    background: var(--primary);
+    color: #fff;
+}
+.chart-box {
+    width: 100%;
+    height: 380px;
+}
+.chart-box.map { height: 540px; }
+
+/* ── 数据表格（单品明细 / 关联分析）────────────── */
+.table-box {
+    width: 100%;
+    overflow-x: auto;
+}
+.table-box table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    color: var(--text);
+}
+.table-box th, .table-box td {
+    padding: 8px 10px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+.table-box th:first-child, .table-box td:first-child,
+.table-box th:nth-child(2), .table-box td:nth-child(2) {
+    text-align: left;
+}
+.table-box th {
+    background: var(--card-bg-soft, #f7f7fb);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+}
+/* 关联分析 关系类型标签 */
+.rel-comp { color: #15803d; font-weight: 600; }
+.rel-sub  { color: #b91c1c; font-weight: 600; }
+.rel-neu  { color: var(--text-secondary); }
+.table-box tr:hover td { background: rgba(124, 58, 237, 0.06); }
+.table-box tr.sel-row td { background: rgba(239, 68, 68, 0.12); }
+.small { font-size: 12px; }
+
+/* ── Footer ───────────────────────────────────── */
+.footer {
+    text-align: center;
+    padding: 24px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+/* ── Filter Bar ───────────────────────────────── */
+.filter-bar {
+    max-width: 1360px;
+    margin: 16px auto 0;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+}
+.filter-bar label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+.filter-bar select {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
+    background: #fff;
+    color: var(--text);
+    cursor: pointer;
+}
+.filter-bar button {
+    padding: 7px 18px;
+    border: none;
+    border-radius: 8px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .15s;
+}
+.filter-bar button:hover { background: var(--primary-light); }
+.filter-hint {
+    font-size: 12px;
+    color: var(--accent);
+    margin-left: auto;
+}
+
+/* ── Section Title ───────────────────────────── */
+.section-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    margin: 28px 0 14px;
+    padding-left: 12px;
+    border-left: 4px solid var(--primary);
+}
+
+/* ── Insights ─────────────────────────────────── */
+.insights { margin-bottom: 8px; }
+.insights-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+}
+.insight-card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+    border-left: 4px solid var(--accent);
+}
+.insight-tag {
+    display: inline-block;
+    background: rgba(249,115,22,.12);
+    color: var(--accent);
+    font-size: 12px;
+    padding: 2px 10px;
+    border-radius: 12px;
+    margin-bottom: 8px;
+}
+.insight-card h4 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+    line-height: 1.4;
+}
+.insight-card p {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.7;
+}
+.muted { color: var(--text-secondary); font-size: 13px; }
+
+/* ── Responsive ───────────────────────────────── */
+@media (max-width: 900px) {
+    .kpi-row { grid-template-columns: repeat(2, 1fr); }
+    .chart-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 500px) {
+    .kpi-row { grid-template-columns: 1fr; }
+    .header h1 { font-size: 17px; }
+    .filter-hint { margin-left: 0; width: 100%; }
+}
+
