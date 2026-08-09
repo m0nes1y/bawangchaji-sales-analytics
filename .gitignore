@@ -10,6 +10,7 @@ env/
 *.sqlite
 *.sqlite3
 data/bawangchaji_sales.csv
+data/members.csv
 
 # 编辑器 / 系统
 .DS_Store

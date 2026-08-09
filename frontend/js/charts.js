@@ -442,11 +442,163 @@ async function loadInsights() {
     }
 }
 
+// ── 高级分析：指标体系 / 异动监测 / 显著性检验 / 弹性 / 预测 / RFM / 流失预测 ──
+async function loadMetrics() {
+    const d = await getJSON("/api/metrics" + qp());
+    const box = document.getElementById("metric-table");
+    if (!d.metrics || !d.metrics.length) { box.innerHTML = '<p class="muted">无数据</p>'; return; }
+    const fmtVal = m => {
+        if (m.fmt === "money") return "¥" + Number(m.value).toLocaleString("zh-CN");
+        if (m.fmt === "num") return Number(m.value).toLocaleString("zh-CN");
+        if (m.fmt === "num1") return Number(m.value).toFixed(1);
+        if (m.fmt === "num2") return Number(m.value).toFixed(2);
+        return m.value == null ? "--" : m.value;
+    };
+    const head = `<tr><th>指标</th><th>数值</th><th>口径说明</th></tr>`;
+    const rows = d.metrics.map(m =>
+        `<tr><td><b>${m.label}</b></td><td class="num">${fmtVal(m)}${m.unit ? " " + m.unit : ""}</td><td class="muted small">${m.def}</td></tr>`
+    ).join("");
+    box.innerHTML = `<table>${head}${rows}</table>`;
+}
+
+async function loadAnomaly() {
+    const d = await getJSON("/api/anomaly" + qp());
+    const box = document.getElementById("anomaly-list");
+    const s = d.stats || {};
+    if (!d.anomalies || !d.anomalies.length) {
+        box.innerHTML = `<p class="muted">未检测到显著异动（阈值：|z|≥3 或 环比|Δ|≥30%）</p>`;
+        return;
+    }
+    const head = `<div class="list-head">均值 ${fmt(s.mean)} · 标准差 ${fmt(s.std)} · 共 ${s.total_days} 天</div>`;
+    const items = d.anomalies.map(a =>
+        `<div class="anom-item">
+            <span class="anom-date">${a.date}</span>
+            <span class="anom-qty">${fmt(a.qty)} 杯</span>
+            <span class="anom-z">z=${a.z}</span>
+            <span class="anom-reason ${a.reason.includes('节假日') ? 'r-hol' : a.reason.includes('活动') ? 'r-cam' : a.reason.includes('天气') ? 'r-wea' : 'r-oth'}">${a.reason}</span>
+        </div>`).join("");
+    box.innerHTML = head + items;
+}
+
+async function loadHypothesis() {
+    const d = await getJSON("/api/hypothesis" + qp());
+    const box = document.getElementById("hypothesis-table");
+    if (!d || !d.length) { box.innerHTML = '<p class="muted">样本不足</p>'; return; }
+    const head = `<tr><th>对比</th><th>均值A / B</th><th>差异</th><th>t</th><th>p</th><th>结论</th></tr>`;
+    const rows = d.map(t =>
+        `<tr>
+            <td>${t.name_a}<br/>vs ${t.name_b}</td>
+            <td class="num">${t.mean_a} / ${t.mean_b}</td>
+            <td class="num ${t.significant ? 'pos' : ''}">${t.diff>0?'+':''}${t.diff}</td>
+            <td class="num">${t.t}</td>
+            <td class="num">${t.p < 1e-4 ? t.p.toExponential(1) : t.p.toFixed(4)}</td>
+            <td class="${t.significant ? 'rel-comp' : 'rel-neu'}">${t.significant ? '显著' : '不显著'}</td>
+        </tr>`).join("");
+    box.innerHTML = `<table>${head}${rows}</table><p class="muted small">手写 Welch t 检验（方差不齐），p&lt;0.05 视为统计显著。</p>`;
+}
+
+async function loadElasticity() {
+    const d = await getJSON("/api/elasticity" + qp());
+    const kpi = document.getElementById("elasticity-kpi");
+    if (!d || !d.elasticity && d.elasticity !== 0) { kpi.innerHTML = '<p class="muted">样本不足</p>'; return; }
+    const sig = d.p < 0.05;
+    kpi.innerHTML = `<div class="kpi-inline-item"><span class="big">${d.elasticity}</span><span>价格弹性 (lnQ/lnP)</span></div>
+        <div class="kpi-inline-item"><span class="${sig ? 'rel-comp' : 'rel-neu'}">${sig ? '显著' : '不显著'}</span><span>p=${d.p < 1e-4 ? d.p.toExponential(1) : d.p.toFixed(4)}</span></div>
+        <div class="kpi-inline-item"><span>${d.n}</span><span>样本(门店-日·产品)</span></div>`;
+    const c = getChart("chart-elasticity");
+    c.setOption({
+        tooltip: { trigger: "item", formatter: p => `单价: ¥${p.value[0]}<br/>销量: ${p.value[1]} 杯` },
+        grid: { left: 50, right: 20, top: 20, bottom: 35 },
+        xAxis: { type: "value", name: "均价(元)", scale: true },
+        yAxis: { type: "value", name: "销量(杯)", scale: true },
+        series: [{ type: "scatter", symbolSize: 6, data: d.scatter, itemStyle: { color: "rgba(124,58,237,0.5)" } }],
+    });
+}
+
+async function loadForecast() {
+    const d = await getJSON("/api/forecast" + qp());
+    const c = getChart("chart-forecast");
+    if (!d || !d.history) { c.clear(); return; }
+    const x = [...d.history_months, ...d.forecast_months];
+    const n = d.history.length;
+    const hist = [...d.history, ...d.forecast.map(() => null)];
+    const fc = d.history.map(() => null);
+    fc[n - 1] = d.history[n - 1];
+    d.forecast.forEach((v, i) => fc[n + i] = v);
+    const lo = d.history.map(() => null); lo[n - 1] = d.history[n - 1];
+    d.lower.forEach((v, i) => lo[n + i] = v);
+    const band = d.history.map(() => null);
+    d.forecast.forEach((v, i) => band[n + i] = d.upper[i] - d.lower[i]);
+    c.setOption({
+        tooltip: { trigger: "axis" },
+        legend: { bottom: 0, data: ["历史销量", "预测销量"] },
+        grid: { left: 60, right: 20, bottom: 45, top: 20 },
+        xAxis: { type: "category", data: x, axisLabel: { rotate: 30, fontSize: 10 } },
+        yAxis: { type: "value", name: "销量(杯)" },
+        series: [
+            { name: "历史销量", type: "line", data: hist, smooth: true, itemStyle: { color: purple }, lineStyle: { width: 2 } },
+            { name: "预测销量", type: "line", data: fc, smooth: true, itemStyle: { color: orange }, lineStyle: { width: 2, type: "dashed" } },
+            { name: "置信下界", type: "line", data: lo, stack: "ci", symbol: "none", lineStyle: { opacity: 0 }, tooltip: { show: false } },
+            { name: "95% 区间", type: "line", data: band, stack: "ci", symbol: "none", lineStyle: { opacity: 0 }, areaStyle: { color: "rgba(124,58,237,0.15)" }, tooltip: { show: false } },
+        ],
+    });
+}
+
+async function loadRFM() {
+    const d = await getJSON("/api/rfm" + qp());
+    const c = getChart("chart-rfm");
+    if (!d || !d.segments || !d.segments.length) { c.clear(); return; }
+    const segs = d.segments;
+    c.setOption({
+        tooltip: {
+            trigger: "axis",
+            formatter: p => {
+                const s = segs[p[0].dataIndex];
+                return `${s.segment}<br/>人数: ${fmt(s.count)}<br/>人均消费: ¥${fmt(s.avg_monetary)}<br/>平均最近购买: ${fmt(s.avg_recency)} 天<br/>流失率: ${s.churn_rate}%`;
+            }
+        },
+        grid: { left: 70, right: 20, bottom: 40, top: 20 },
+        xAxis: { type: "category", data: segs.map(s => s.segment), axisLabel: { fontSize: 10, interval: 0 } },
+        yAxis: { type: "value", name: "会员数" },
+        series: [{
+            type: "bar", data: segs.map(s => s.count), barWidth: 36,
+            itemStyle: { color: purple },
+            label: { show: true, position: "top", formatter: p => "流失率 " + segs[p.dataIndex].churn_rate + "%" },
+        }],
+    });
+}
+
+async function loadChurn() {
+    const d = await getJSON("/api/churn_model" + qp());
+    const kpi = document.getElementById("churn-kpi");
+    if (!d || !d.auc) { kpi.innerHTML = '<p class="muted">样本不足</p>'; return; }
+    kpi.innerHTML = `
+        <div class="kpi-inline-item"><span class="big">${d.auc}</span><span>AUC (5折CV)</span></div>
+        <div class="kpi-inline-item"><span>${d.accuracy}</span><span>准确率</span></div>
+        <div class="kpi-inline-item"><span>${d.f1}</span><span>F1</span></div>
+        <div class="kpi-inline-item"><span class="rel-comp">+${d.lift_acc}pp</span><span>vs 基线 ${d.baseline_accuracy}</span></div>`;
+    const c = getChart("chart-churn-imp");
+    const imp = (d.feature_importance || []).slice().reverse();
+    const nameMap = { recency_days: "最近购买间隔", frequency: "购买频次", monetary: "消费金额", tenure_months: "会员时长", promo_sensitivity: "促销敏感度" };
+    c.setOption({
+        tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+        grid: { left: 90, right: 40, top: 10, bottom: 20 },
+        xAxis: { type: "value", name: "重要性" },
+        yAxis: { type: "category", data: imp.map(i => nameMap[i.feature] || i.feature) },
+        series: [{
+            type: "bar", data: imp.map(i => i.importance), barWidth: 18,
+            itemStyle: { color: purple },
+            label: { show: true, position: "right", formatter: p => p.value },
+        }],
+    });
+}
+
 // ── 总加载 ────────────────────────────────────
 async function loadAll() {
     const tasks = [loadKPI, loadMonthly, loadProduct, loadCategory, loadCity,
         loadSeason, loadWeather, loadCampaign, loadHeatmap, loadHoliday, loadDiscount,
-        loadProductDetail, loadProductMonthly, loadProductAssoc, loadMemberTier, loadChinaMap, loadInsights];
+        loadProductDetail, loadProductMonthly, loadProductAssoc, loadMemberTier, loadChinaMap, loadInsights,
+        loadMetrics, loadAnomaly, loadHypothesis, loadElasticity, loadForecast, loadRFM, loadChurn];
     await Promise.allSettled(tasks.map(t => t().catch(err => console.error(t.name, err))));
     const hint = document.getElementById("filter-hint");
     const parts = [];

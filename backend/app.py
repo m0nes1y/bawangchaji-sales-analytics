@@ -4,15 +4,25 @@
 """
 
 import csv
+import math
 import os
 import re
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from flask import Flask, jsonify, request, send_from_directory
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.model_selection import cross_val_predict
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 DATA_PATH = os.path.join(ROOT_DIR, "data", "bawangchaji_sales.csv")
+MEMBERS_CSV = os.path.join(ROOT_DIR, "data", "members.csv")
 DB_PATH = os.path.join(BASE_DIR, "bawangchaji.db")
 
 app = Flask(__name__, static_folder=os.path.join(ROOT_DIR, "frontend"), static_url_path="")
@@ -123,6 +133,40 @@ def init_db():
     return loaded, skipped
 
 
+def init_members():
+    """读取会员建模样本 CSV 写入 members 表（用于 RFM 分层与 GBDT 流失预测）。"""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DROP TABLE IF EXISTS members")
+    cur.execute(
+        """CREATE TABLE members (
+            member_id INTEGER, city TEXT, channel TEXT, tenure_months INTEGER,
+            frequency INTEGER, monetary REAL, recency_days INTEGER,
+            promo_sensitivity REAL, churn INTEGER
+        )"""
+    )
+    loaded = 0
+    if os.path.exists(MEMBERS_CSV):
+        with open(MEMBERS_CSV, encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    cur.execute(
+                        "INSERT INTO members VALUES (?,?,?,?,?,?,?,?,?)",
+                        (
+                            int(row["member_id"]), row["city"], row["channel"],
+                            int(row["tenure_months"]), int(row["frequency"]),
+                            float(row["monetary"]), int(row["recency_days"]),
+                            float(row["promo_sensitivity"]), int(row["churn"]),
+                        ),
+                    )
+                    loaded += 1
+                except Exception:
+                    pass
+    conn.commit()
+    conn.close()
+    return loaded
+
+
 def ensure_db():
     # 数据 CSV 缺失时自动重新生成（固定随机种子，结果可复现），保证克隆仓库后开箱即用
     if not os.path.exists(DATA_PATH):
@@ -135,14 +179,26 @@ def ensure_db():
             generate_data.main()
         except Exception as e:
             print(f"[init] 自动生成数据失败：{e}")
+    if not os.path.exists(MEMBERS_CSV):
+        try:
+            import sys
+            if BASE_DIR not in sys.path:
+                sys.path.insert(0, BASE_DIR)
+            import generate_members
+            print("[init] 未找到会员样本，正在自动生成 members.csv ...")
+            generate_members.main()
+        except Exception as e:
+            print(f"[init] 自动生成会员样本失败：{e}")
     if not os.path.exists(DB_PATH):
         n, s = init_db()
-        print(f"[init] 首次建库完成：导入 {n} 行，跳过 {s} 行脏数据")
+        m = init_members()
+        print(f"[init] 首次建库完成：销量 {n} 行(跳过 {s})，会员 {m} 行")
         return
     cnt = query("SELECT COUNT(*) AS c FROM sales")
     if not cnt or cnt[0]["c"] == 0:
         n, s = init_db()
-        print(f"[init] 数据库为空，重新导入：{n} 行，跳过 {s} 行")
+        m = init_members()
+        print(f"[init] 数据库为空，重新导入：销量 {n} 行(跳过 {s})，会员 {m} 行")
 
 
 # ── 通用查询（缓存 + 行转字典）─────────────────────
@@ -692,6 +748,312 @@ def api_member_tier():
             avg = sum(r["qty"] for r in rows) / len(rows)
             out.append({"tier": name, "avg_qty": round(avg, 1), "count": len(rows)})
     return jsonify(out)
+
+
+# ── 高级分析：指标体系 / 异动监测 / 显著性检验 / 弹性 / 预测 / RFM / 流失预测 ──
+@app.route("/api/metrics")
+def api_metrics():
+    """业务指标体系 + 指标字典：从 0 到 1 定义核心指标与统计口径。"""
+    fw, fp = _filters()
+    base = query(
+        f"SELECT COUNT(*) AS c, SUM(quantity) AS q, SUM(revenue) AS rev, AVG(member_pct) AS m "
+        f"FROM sales WHERE 1=1 {fw}", fp)[0]
+    orders = query(f"SELECT COUNT(DISTINCT order_id) AS o FROM sales WHERE 1=1 {fw}", fp)[0]["o"]
+    days = query(f"SELECT COUNT(DISTINCT date) AS d FROM sales WHERE 1=1 {fw}", fp)[0]["d"]
+    cities = query(f"SELECT COUNT(DISTINCT city) AS x FROM sales WHERE 1=1 {fw}", fp)[0]["x"]
+    stores = query(f"SELECT COUNT(DISTINCT store_id) AS x FROM sales WHERE 1=1 {fw}", fp)[0]["x"]
+    products = query(f"SELECT COUNT(DISTINCT product) AS x FROM sales WHERE 1=1 {fw}", fp)[0]["x"]
+    cats = query(f"SELECT COUNT(DISTINCT category) AS x FROM sales WHERE 1=1 {fw}", fp)[0]["x"]
+    mom = query(
+        f"SELECT month, qty FROM ("
+        f"SELECT strftime('%Y-%m', date) AS month, SUM(quantity) AS qty "
+        f"FROM sales WHERE 1=1 {fw} GROUP BY month ORDER BY month) t", fp)
+    last_mom = round((mom[-1]["qty"] - mom[-2]["qty"]) * 100.0 / mom[-2]["qty"], 1) if len(mom) >= 2 else None
+    rep = query("SELECT COUNT(*) AS c FROM members WHERE frequency >= 2")
+    rep_total = query("SELECT COUNT(*) AS c FROM members")
+    rep_rate = round(rep[0]["c"] / rep_total[0]["c"] * 100, 1) if rep and rep_total else None
+    avg_ticket = (base["rev"] / orders) if orders else 0
+    basket = (base["q"] / orders) if orders else 0
+    metrics = [
+        {"label": "总销量", "value": base["q"], "unit": "杯", "def": "统计周期内全部门店产品销售杯数之和", "fmt": "num"},
+        {"label": "总营收", "value": round(base["rev"], 0), "unit": "元", "def": "统计周期内实付金额总和", "fmt": "money"},
+        {"label": "订单数", "value": orders, "unit": "单", "def": "去重订单(购物篮)数，客单价/连带率的分母", "fmt": "num"},
+        {"label": "客单价", "value": round(avg_ticket, 1), "unit": "元/单", "def": "总营收 / 订单数，反映单笔消费水平", "fmt": "num1"},
+        {"label": "连带率", "value": round(basket, 2), "unit": "杯/单", "def": "总销量 / 订单数，反映单次购买件数(搭配能力)", "fmt": "num2"},
+        {"label": "平均会员占比", "value": round(base["m"], 1), "unit": "%", "def": "各明细行会员销售占比的均值", "fmt": "num1"},
+        {"label": "会员复购率", "value": rep_rate, "unit": "%", "def": "建模样本中购买≥2次的会员占比(会员级数据)", "fmt": "num1"},
+        {"label": "日均销量", "value": round(base["q"] / days, 0) if days else 0, "unit": "杯/天", "def": "总销量 / 营业天数", "fmt": "num"},
+        {"label": "最新月环比", "value": last_mom, "unit": "%", "def": "最近自然月销量相对上一月的增幅", "fmt": "num1"},
+        {"label": "覆盖规模", "value": f"{cities}城 / {stores}店 / {products}品 / {cats}类", "unit": "", "def": "城市/门店/产品/品类覆盖广度", "fmt": "text"},
+    ]
+    return jsonify({"metrics": metrics, "period_days": days})
+
+
+@app.route("/api/anomaly")
+def api_anomaly():
+    """异动监测：3σ + 环比阈值标记异常日，并定位根因(节假日/活动/天气)。"""
+    fw, fp = _filters()
+    rows = query(
+        f"SELECT date, SUM(quantity) AS qty FROM sales WHERE 1=1 {fw} GROUP BY date ORDER BY date", fp)
+    if len(rows) < 7:
+        return jsonify({"anomalies": [], "stats": {}})
+    series = [r["qty"] for r in rows]
+    mean = sum(series) / len(series)
+    std = (sum((x - mean) ** 2 for x in series) / len(series)) ** 0.5
+    anomalies = []
+    for i, r in enumerate(rows):
+        z = (r["qty"] - mean) / std if std else 0
+        dod = None
+        if i > 0 and rows[i - 1]["qty"]:
+            dod = (r["qty"] - rows[i - 1]["qty"]) * 100.0 / rows[i - 1]["qty"]
+        if abs(z) >= 3 or (dod is not None and abs(dod) >= 30):
+            d = r["date"]
+            day = query(
+                f"SELECT is_holiday, weather, "
+                f"CASE WHEN campaign IS NOT NULL AND campaign != '' THEN campaign ELSE '' END AS camp "
+                f"FROM sales WHERE 1=1 {fw} AND date=? LIMIT 1", fp + [d])
+            reason = "异常波动(无显著外部因素)"
+            if day:
+                if day[0]["is_holiday"] == "是":
+                    reason = "节假日"
+                elif day[0]["camp"]:
+                    reason = "营销活动：" + day[0]["camp"]
+                elif day[0]["weather"] in ("小雨", "雷阵雨", "阴"):
+                    reason = "恶劣天气：" + day[0]["weather"]
+            anomalies.append({
+                "date": d, "qty": r["qty"], "z": round(z, 2),
+                "dod": round(dod, 1) if dod is not None else None, "reason": reason,
+            })
+    anomalies.sort(key=lambda x: -abs(x["z"]))
+    return jsonify({
+        "anomalies": anomalies[:15],
+        "stats": {"mean": round(mean, 0), "std": round(std, 0),
+                  "threshold_z": 3, "threshold_dod": 30, "total_days": len(rows)},
+    })
+
+
+def _welch(a, b, name_a, name_b):
+    a = [x for x in a if x is not None]
+    b = [x for x in b if x is not None]
+    if len(a) < 2 or len(b) < 2:
+        return None
+    t, p = stats.ttest_ind(a, b, equal_var=False)
+    na, nb = len(a), len(b)
+    ma, mb = sum(a) / na, sum(b) / nb
+    se = math.sqrt((np.var(a, ddof=1) / na) + (np.var(b, ddof=1) / nb))
+    ci = ((ma - mb) - 1.96 * se, (ma - mb) + 1.96 * se)
+    higher = ma > mb
+    return {
+        "name_a": name_a, "name_b": name_b,
+        "mean_a": round(ma, 1), "mean_b": round(mb, 1),
+        "diff": round(ma - mb, 1), "t": round(float(t), 2), "p": float(p),
+        "ci_low": round(ci[0], 1), "ci_high": round(ci[1], 1),
+        "significant": bool(p < 0.05),
+        "conclusion": f"{name_a}日均销量({ma:.1f}){'高于' if higher else '低于'}"
+                      f"{name_b}({mb:.1f})，差异{'显著' if p < 0.05 else '不显著'}(p={p:.2e})",
+    }
+
+
+@app.route("/api/hypothesis")
+def api_hypothesis():
+    """显著性检验(手写 Welch t 检验)：验证业务差异是否统计显著。"""
+    fw, fp = _filters()
+    sd = _store_days(fw, fp)
+    tests = []
+    hol = _welch([r["qty"] for r in sd if r["is_holiday"] == "是"],
+                 [r["qty"] for r in sd if r["is_holiday"] == "否"],
+                 "节假日", "非节假日")
+    if hol:
+        tests.append(hol)
+    disc = _welch([r["qty"] for r in sd if r["disc"] >= 0.1],
+                  [r["qty"] for r in sd if r["disc"] < 0.1],
+                  "高折扣(≥10%)", "低折扣(<10%)")
+    if disc:
+        tests.append(disc)
+    wea = _welch([r["qty"] for r in sd if r["weather"] == "晴"],
+                 [r["qty"] for r in sd if r["weather"] == "雷阵雨"],
+                 "晴天", "雷阵雨")
+    if wea:
+        tests.append(wea)
+    return jsonify(tests)
+
+
+@app.route("/api/elasticity")
+def api_elasticity():
+    """价格弹性：按产品做组内固定效应(去均值)的双对数回归，消除品类结构干扰，
+    得到干净的「自身价格弹性」，返回弹性系数、组内 R²、p 值。"""
+    fw, fp = _filters()
+    rows = query(
+        f"SELECT product, SUM(revenue)*1.0/SUM(quantity) AS price, SUM(quantity) AS qty "
+        f"FROM sales WHERE 1=1 {fw} GROUP BY product, store_id, date", fp)
+    by_prod = {}
+    for r in rows:
+        if not r["price"] or r["price"] <= 0 or not r["qty"]:
+            continue
+        by_prod.setdefault(r["product"], []).append((math.log(r["price"]), math.log(r["qty"])))
+    dx_all, dy_all = [], []
+    raw = []
+    for pts in by_prod.values():
+        if len(pts) < 3:
+            continue
+        lps = [p for p, _ in pts]
+        lqs = [q for _, q in pts]
+        mp, mq = sum(lps) / len(lps), sum(lqs) / len(lqs)
+        for (lp, lq) in zip(lps, lqs):
+            dx_all.append(lp - mp)
+            dy_all.append(lq - mq)
+        raw.extend([(math.exp(lp), math.exp(lq)) for lp, lq in pts])
+    n = len(dx_all)
+    if n < 10:
+        return jsonify({})
+    mx, my = sum(dx_all) / n, sum(dy_all) / n
+    denom = sum((x - mx) ** 2 for x in dx_all)
+    slope = sum((x - mx) * (y - my) for x, y in zip(dx_all, dy_all)) / denom if denom else 0
+    pred = [mx_ * slope for mx_ in (x - mx for x in dx_all)]  # demeaned predict = slope*dx (since my centered)
+    # 重新算预测：demeaned yhat = slope*(x-mx)
+    yhat = [slope * (x - mx) for x in dx_all]
+    ss_res = sum((y - h) ** 2 for y, h in zip(dy_all, yhat))
+    ss_tot = sum((y - my) ** 2 for y in dy_all)
+    r2 = 1 - ss_res / ss_tot if ss_tot else 0
+    se = math.sqrt(ss_res / (n - 2) / denom) if (n - 2) > 0 and denom else 0
+    t_stat = slope / se if se else 0
+    p = 2 * (1 - stats.t.cdf(abs(t_stat), n - 2)) if (n - 2) > 0 else 1.0
+    sample = raw[::max(1, len(raw) // 200)]
+    return jsonify({
+        "elasticity": round(slope, 3), "r2": round(r2, 3), "p": float(p),
+        "n": n, "method": "组内固定效应(按产品去均值)",
+        "scatter": [[round(p, 1), round(q, 0)] for p, q in sample],
+    })
+
+
+@app.route("/api/forecast")
+def api_forecast():
+    """时间序列预测：加法季节分解(趋势 + 月度季节项)外推 + 95% 置信区间。"""
+    fw, fp = _filters()
+    rows = query(
+        f"SELECT strftime('%Y-%m', date) AS month, SUM(quantity) AS qty "
+        f"FROM sales WHERE 1=1 {fw} GROUP BY month ORDER BY month", fp)
+    if len(rows) < 3:
+        return jsonify({})
+    months = [r["month"] for r in rows]
+    y = [r["qty"] for r in rows]
+    x = list(range(len(y)))
+    n = len(x)
+    mx, my = sum(x) / n, sum(y) / n
+    denom = sum((xi - mx) ** 2 for xi in x)
+    slope = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y)) / denom
+    intercept = my - slope * mx
+    trend = [intercept + slope * xi for xi in x]
+    detr = [y[i] - trend[i] for i in range(n)]
+    # 月度季节项：按自然月聚合去趋势后的偏差
+    seas = {}
+    for m, d in zip(months, detr):
+        cm = int(m.split("-")[1])
+        seas.setdefault(cm, []).append(d)
+    seasonal_idx = {cm: sum(v) / len(v) for cm, v in seas.items()}
+    resid = [detr[i] - seasonal_idx[int(months[i].split("-")[1])] for i in range(n)]
+    # 仅 1 个自然年数据，季节项逐月确定（resid 退化为 0）；预测置信区间改用
+    # 趋势回归残差离散度（即 detr 的 std），代表「实际值相对 趋势+季节 的典型偏离」
+    rstd = (sum(d * d for d in detr) / max(1, n - 2)) ** 0.5
+    last = datetime.strptime(months[-1], "%Y-%m")
+    fmonths = [(last + timedelta(days=32 * i)).strftime("%Y-%m") for i in range(1, 4)]
+    pred, lower, upper = [], [], []
+    for i, fm in enumerate(fmonths, start=n):
+        cm = int(fm.split("-")[1])
+        s = seasonal_idx.get(cm, 0)
+        p = intercept + slope * i + s
+        pred.append(p)
+        lower.append(p - 1.96 * rstd)
+        upper.append(p + 1.96 * rstd)
+    peak = max(seasonal_idx.items(), key=lambda kv: kv[1])
+    return jsonify({
+        "history_months": months, "history": y, "trend": [round(t, 0) for t in trend],
+        "forecast_months": fmonths,
+        "forecast": [round(p, 0) for p in pred],
+        "lower": [round(p, 0) for p in lower],
+        "upper": [round(p, 0) for p in upper],
+        "slope": round(slope, 0), "rstd": round(rstd, 0),
+        "seasonal_peak_month": peak[0],
+    })
+
+
+@app.route("/api/rfm")
+def api_rfm():
+    """RFM 用户分层：对会员样本做 R/F/M 五分位分层并分段。"""
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT * FROM members", conn)
+    conn.close()
+    if len(df) == 0:
+        return jsonify({})
+    df["R"] = pd.qcut(df["recency_days"], 5, labels=[5, 4, 3, 2, 1]).astype(int)
+    df["F"] = pd.qcut(df["frequency"].rank(method="first"), 5, labels=[1, 2, 3, 4, 5]).astype(int)
+    df["M"] = pd.qcut(df["monetary"].rank(method="first"), 5, labels=[1, 2, 3, 4, 5]).astype(int)
+    df["RFM"] = df["R"] + df["F"] + df["M"]
+
+    def seg(s):
+        if s >= 13:
+            return "高价值(冠军)"
+        if s >= 11:
+            return "忠诚客户"
+        if s >= 9:
+            return "潜力客户"
+        if s >= 7:
+            return "新客/一般"
+        return "流失风险"
+
+    df["segment"] = df["RFM"].apply(seg)
+    g = df.groupby("segment").agg(
+        count=("member_id", "count"), avg_monetary=("monetary", "mean"),
+        avg_recency=("recency_days", "mean"), churn_rate=("churn", "mean")).reset_index()
+    order = ["高价值(冠军)", "忠诚客户", "潜力客户", "新客/一般", "流失风险"]
+    g["segment"] = pd.Categorical(g["segment"], order, ordered=True)
+    g = g.sort_values("segment")
+    return jsonify({
+        "segments": [{
+            "segment": str(r["segment"]), "count": int(r["count"]),
+            "avg_monetary": round(r["avg_monetary"], 0),
+            "avg_recency": round(r["avg_recency"], 0),
+            "churn_rate": round(r["churn_rate"] * 100, 1),
+        } for _, r in g.iterrows()],
+        "total": int(len(df)),
+    })
+
+
+_ML_CACHE = {}
+
+
+@app.route("/api/churn_model")
+def api_churn_model():
+    """会员复购/流失预测：GBDT 监督式建模，5 折交叉验证输出诚实指标。"""
+    cached = _cache_get("churn_model")
+    if cached:
+        return jsonify(cached)
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("SELECT * FROM members", conn)
+    conn.close()
+    if len(df) < 50:
+        return jsonify({})
+    feats = ["recency_days", "frequency", "monetary", "tenure_months", "promo_sensitivity"]
+    X = df[feats].values
+    y = df["churn"].values
+    clf = GradientBoostingClassifier(n_estimators=120, max_depth=3, random_state=42)
+    proba = cross_val_predict(clf, X, y, cv=5, method="predict_proba")[:, 1]
+    pred = cross_val_predict(clf, X, y, cv=5, method="predict")
+    auc = roc_auc_score(y, proba)
+    acc = accuracy_score(y, pred)
+    f1 = f1_score(y, pred)
+    clf.fit(X, y)
+    imp = sorted(zip(feats, clf.feature_importances_), key=lambda z: -z[1])
+    base_acc = max(sum(y == 1), sum(y == 0)) / len(y)
+    res = {
+        "n": int(len(df)), "auc": round(float(auc), 3), "accuracy": round(float(acc), 3),
+        "f1": round(float(f1), 3), "baseline_accuracy": round(base_acc, 3),
+        "lift_acc": round((float(acc) - base_acc) * 100, 1),
+        "feature_importance": [{"feature": f, "importance": round(float(v), 3)} for f, v in imp],
+        "positive_rate": round(float(np.mean(y)) * 100, 1),
+    }
+    _cache_set("churn_model", res)
+    return jsonify(res)
 
 
 @app.errorhandler(Exception)

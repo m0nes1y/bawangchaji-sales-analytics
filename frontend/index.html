@@ -136,6 +136,51 @@
                 <div id="chart-china-map" class="chart-box map"></div>
             </div>
         </section>
+
+        <!-- 高级分析：指标体系 / 统计检验 / 预测建模 -->
+        <section class="advanced">
+            <h2 class="section-title">高级分析 · 指标体系 / 统计检验 / 预测建模</h2>
+            <div class="chart-grid">
+                <div class="chart-card span-full">
+                    <h3>业务指标体系（指标字典）</h3>
+                    <div id="metric-table" class="table-box"></div>
+                    <p class="muted small">从 0 到 1 定义核心指标与统计口径；会员复购率来自独立会员建模样本（模拟数据）。</p>
+                </div>
+
+                <div class="chart-card">
+                    <h3>异动监测（3σ + 环比阈值）</h3>
+                    <div id="anomaly-list" class="list-box"></div>
+                </div>
+
+                <div class="chart-card">
+                    <h3>显著性检验（Welch t 检验）</h3>
+                    <div id="hypothesis-table" class="table-box"></div>
+                </div>
+
+                <div class="chart-card">
+                    <h3>价格弹性（组内固定效应）</h3>
+                    <div id="elasticity-kpi" class="kpi-inline"></div>
+                    <div id="chart-elasticity" class="chart-box" style="height:240px"></div>
+                </div>
+
+                <div class="chart-card">
+                    <h3>时间序列预测（季节分解）</h3>
+                    <div id="chart-forecast" class="chart-box" style="height:300px"></div>
+                </div>
+
+                <div class="chart-card">
+                    <h3>RFM 会员分层</h3>
+                    <div id="chart-rfm" class="chart-box" style="height:300px"></div>
+                </div>
+
+                <div class="chart-card span-full">
+                    <h3>会员复购 / 流失预测模型（GBDT）</h3>
+                    <div id="churn-kpi" class="kpi-inline"></div>
+                    <div id="chart-churn-imp" class="chart-box" style="height:240px"></div>
+                    <p class="muted small">基于 6000 条会员建模样本（模拟），5 折交叉验证；流失标签由 logistic 函数 + 噪声生成，模型学到真实信号但非完全可分离。</p>
+                </div>
+            </div>
+        </section>
     </main>
 
     <footer class="footer">
